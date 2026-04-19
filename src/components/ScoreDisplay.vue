@@ -8,8 +8,15 @@
 
     <!-- Visual picker comparison -->
     <div class="picker-compare">
-      <canvas ref="svCanvas" class="sv-canvas" :width="SV_W" :height="SV_H" />
-      <canvas ref="hueCanvas" class="hue-canvas" :width="HUE_W" :height="SV_H" />
+      <!-- Linear mode: SV rect + hue bar -->
+      <template v-if="pickerMode === 'linear'">
+        <canvas ref="svCanvas" class="sv-canvas" :width="SV_W" :height="SV_H" />
+        <canvas ref="hueCanvas" class="hue-canvas" :width="HUE_W" :height="SV_H" />
+      </template>
+      <!-- Wheel mode: single wheel canvas -->
+      <template v-else>
+        <canvas ref="wheelCanvas" class="wheel-canvas" :width="WHEEL_SIZE" :height="WHEEL_SIZE" />
+      </template>
       <div class="picker-legend">
         <span class="dot dot-target" />{{ t('game.target') }}
         <span class="dot dot-user" style="margin-left:12px" />{{ t('game.yourColor') }}
@@ -59,8 +66,10 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { storeToRefs } from 'pinia'
 import type { ColorData, ScoreGrade } from '@/types'
-import { hueError, rgbToHSV, hsvToRGB } from '@/utils/colorMath'
+import { hueError, hsvToRGB } from '@/utils/colorMath'
+import { useSettingsStore } from '@/stores/settingsStore'
 
 const { t } = useI18n()
 defineEmits<{ (e: 'next'): void }>()
@@ -71,120 +80,141 @@ const props = defineProps<{
   userColor: ColorData
 }>()
 
+const { pickerMode } = storeToRefs(useSettingsStore())
+
 const hueErr = computed(() => hueError(props.targetColor.hsl.h, props.userColor.hsl.h))
 const satErr = computed(() => Math.abs(props.targetColor.hsl.s - props.userColor.hsl.s))
 const lightErr = computed(() => Math.abs(props.targetColor.hsl.l - props.userColor.hsl.l))
 
 // ── Canvas refs ───────────────────────────────────────────────────────────
-const svCanvas = ref<HTMLCanvasElement>()
-const hueCanvas = ref<HTMLCanvasElement>()
+const svCanvas   = ref<HTMLCanvasElement>()
+const hueCanvas  = ref<HTMLCanvasElement>()
+const wheelCanvas = ref<HTMLCanvasElement>()
 
 const SV_W = 260, SV_H = 160, HUE_W = 16
+const WHEEL_SIZE = 200, RING_W = 20
 
-// Colors for the two markers
 const TARGET_COLOR = '#ffffff'
-const USER_COLOR = '#f472b6'
+const USER_COLOR   = '#f472b6'
 
+// ── Linear: SV rect ───────────────────────────────────────────────────────
 function drawSV() {
   const canvas = svCanvas.value; if (!canvas) return
   const ctx = canvas.getContext('2d')!
+  const tHSV = props.targetColor.hsv
+  const uHSV = props.userColor.hsv
 
-  // Use target hue as the base for the SV gradient (most informative)
-  const tHSV = rgbToHSV(props.targetColor.rgb)
-  const uHSV = rgbToHSV(props.userColor.rgb)
-  const baseHue = tHSV.h
-
-  const hueRGB = hsvToRGB({ h: baseHue, s: 100, v: 100 })
-  const hueStr = `rgb(${hueRGB.r},${hueRGB.g},${hueRGB.b})`
-
-  // Draw SV gradient
+  const hueRGB = hsvToRGB({ h: tHSV.h, s: 100, v: 100 })
   const gradH = ctx.createLinearGradient(0, 0, SV_W, 0)
   gradH.addColorStop(0, '#fff')
-  gradH.addColorStop(1, hueStr)
-  ctx.fillStyle = gradH
-  ctx.fillRect(0, 0, SV_W, SV_H)
-
+  gradH.addColorStop(1, `rgb(${hueRGB.r},${hueRGB.g},${hueRGB.b})`)
+  ctx.fillStyle = gradH; ctx.fillRect(0, 0, SV_W, SV_H)
   const gradV = ctx.createLinearGradient(0, 0, 0, SV_H)
-  gradV.addColorStop(0, 'rgba(0,0,0,0)')
-  gradV.addColorStop(1, '#000')
-  ctx.fillStyle = gradV
-  ctx.fillRect(0, 0, SV_W, SV_H)
+  gradV.addColorStop(0, 'rgba(0,0,0,0)'); gradV.addColorStop(1, '#000')
+  ctx.fillStyle = gradV; ctx.fillRect(0, 0, SV_W, SV_H)
 
-  // Draw connecting line between the two points
-  const tx = (tHSV.s / 100) * SV_W
-  const ty = (1 - tHSV.v / 100) * SV_H
-  const ux = (uHSV.s / 100) * SV_W
-  const uy = (1 - uHSV.v / 100) * SV_H
-
-  ctx.beginPath()
-  ctx.moveTo(tx, ty)
-  ctx.lineTo(ux, uy)
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)'
-  ctx.lineWidth = 1.5
-  ctx.setLineDash([4, 3])
-  ctx.stroke()
-  ctx.setLineDash([])
-
-  // Draw target marker (circle with white fill)
+  const tx = (tHSV.s / 100) * SV_W, ty = (1 - tHSV.v / 100) * SV_H
+  const ux = (uHSV.s / 100) * SV_W, uy = (1 - uHSV.v / 100) * SV_H
+  ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(ux, uy)
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5
+  ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([])
   drawMarker(ctx, tx, ty, TARGET_COLOR, props.targetColor.hex)
-  // Draw user marker (circle with pink outline)
-  drawMarker(ctx, ux, uy, USER_COLOR, props.userColor.hex)
+  drawMarker(ctx, ux, uy, USER_COLOR,   props.userColor.hex)
 }
 
+// ── Linear: hue bar ───────────────────────────────────────────────────────
 function drawHue() {
   const canvas = hueCanvas.value; if (!canvas) return
   const ctx = canvas.getContext('2d')!
-
-  // Hue gradient
   const grad = ctx.createLinearGradient(0, 0, 0, SV_H)
   ;[0, 60, 120, 180, 240, 300, 360].forEach(h => {
     const c = hsvToRGB({ h, s: 100, v: 100 })
     grad.addColorStop(h / 360, `rgb(${c.r},${c.g},${c.b})`)
   })
-  ctx.fillStyle = grad
-  ctx.fillRect(0, 0, HUE_W, SV_H)
-
-  const tHSV = rgbToHSV(props.targetColor.rgb)
-  const uHSV = rgbToHSV(props.userColor.rgb)
-
-  // Draw hue markers
-  drawHueMarker(ctx, (tHSV.h / 360) * SV_H, TARGET_COLOR)
-  drawHueMarker(ctx, (uHSV.h / 360) * SV_H, USER_COLOR)
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, HUE_W, SV_H)
+  drawHueMarker(ctx, (props.targetColor.hsv.h / 360) * SV_H, TARGET_COLOR)
+  drawHueMarker(ctx, (props.userColor.hsv.h   / 360) * SV_H, USER_COLOR)
 }
 
-function drawMarker(ctx: CanvasRenderingContext2D, x: number, y: number, outlineColor: string, fillColor: string) {
-  ctx.beginPath()
-  ctx.arc(x, y, 7, 0, Math.PI * 2)
-  ctx.fillStyle = fillColor
-  ctx.fill()
-  ctx.strokeStyle = outlineColor
-  ctx.lineWidth = 2.5
-  ctx.stroke()
-  // Inner dot
-  ctx.beginPath()
-  ctx.arc(x, y, 2, 0, Math.PI * 2)
-  ctx.fillStyle = outlineColor
-  ctx.fill()
+// ── Wheel ─────────────────────────────────────────────────────────────────
+function drawWheel() {
+  const canvas = wheelCanvas.value; if (!canvas) return
+  const ctx = canvas.getContext('2d')!
+  const cx = WHEEL_SIZE / 2, cy = WHEEL_SIZE / 2
+  const outerR = WHEEL_SIZE / 2, innerRing = outerR - RING_W
+
+  // Hue ring
+  const steps = 360
+  for (let i = 0; i < steps; i++) {
+    const a0 = (i / steps) * Math.PI * 2 - Math.PI / 2
+    const a1 = ((i + 1) / steps) * Math.PI * 2 - Math.PI / 2
+    const c = hsvToRGB({ h: i, s: 100, v: 100 })
+    ctx.beginPath()
+    ctx.moveTo(cx + innerRing * Math.cos(a0), cy + innerRing * Math.sin(a0))
+    ctx.arc(cx, cy, outerR, a0, a1)
+    ctx.arc(cx, cy, innerRing, a1, a0, true)
+    ctx.closePath()
+    ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`
+    ctx.fill()
+  }
+
+  // SV rect inscribed in inner circle
+  const half = innerRing / Math.SQRT2
+  const rx = cx - half, ry = cy - half, rw = half * 2, rh = half * 2
+  const tHSV = props.targetColor.hsv
+  const hueRGB = hsvToRGB({ h: tHSV.h, s: 100, v: 100 })
+  const gradH = ctx.createLinearGradient(rx, 0, rx + rw, 0)
+  gradH.addColorStop(0, '#fff')
+  gradH.addColorStop(1, `rgb(${hueRGB.r},${hueRGB.g},${hueRGB.b})`)
+  ctx.fillStyle = gradH; ctx.fillRect(rx, ry, rw, rh)
+  const gradV = ctx.createLinearGradient(0, ry, 0, ry + rh)
+  gradV.addColorStop(0, 'rgba(0,0,0,0)'); gradV.addColorStop(1, '#000')
+  ctx.fillStyle = gradV; ctx.fillRect(rx, ry, rw, rh)
+
+  // SV markers
+  const uHSV = props.userColor.hsv
+  const tx = rx + (tHSV.s / 100) * rw, ty = ry + (1 - tHSV.v / 100) * rh
+  const ux = rx + (uHSV.s / 100) * rw, uy = ry + (1 - uHSV.v / 100) * rh
+  ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(ux, uy)
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5
+  ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([])
+  drawMarker(ctx, tx, ty, TARGET_COLOR, props.targetColor.hex)
+  drawMarker(ctx, ux, uy, USER_COLOR,   props.userColor.hex)
+
+  // Hue ring markers
+  const ringR = outerR - RING_W / 2
+  const ta = (tHSV.h - 90) * Math.PI / 180
+  const ua = (uHSV.h  - 90) * Math.PI / 180
+  drawRingMarker(ctx, cx + ringR * Math.cos(ta), cy + ringR * Math.sin(ta), TARGET_COLOR)
+  drawRingMarker(ctx, cx + ringR * Math.cos(ua), cy + ringR * Math.sin(ua), USER_COLOR)
 }
 
+// ── Shared marker helpers ─────────────────────────────────────────────────
+function drawMarker(ctx: CanvasRenderingContext2D, x: number, y: number, outline: string, fill: string) {
+  ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2)
+  ctx.fillStyle = fill; ctx.fill()
+  ctx.strokeStyle = outline; ctx.lineWidth = 2.5; ctx.stroke()
+  ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2)
+  ctx.fillStyle = outline; ctx.fill()
+}
 function drawHueMarker(ctx: CanvasRenderingContext2D, y: number, color: string) {
-  ctx.fillStyle = color
-  ctx.strokeStyle = 'rgba(0,0,0,0.6)'
-  ctx.lineWidth = 1
-  // Triangle pointer
-  ctx.beginPath()
-  ctx.moveTo(0, y)
-  ctx.lineTo(HUE_W * 0.6, y - 5)
-  ctx.lineTo(HUE_W * 0.6, y + 5)
-  ctx.closePath()
-  ctx.fill()
-  ctx.stroke()
+  ctx.fillStyle = color; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(HUE_W * 0.6, y - 5); ctx.lineTo(HUE_W * 0.6, y + 5)
+  ctx.closePath(); ctx.fill(); ctx.stroke()
+}
+function drawRingMarker(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2)
+  ctx.fillStyle = color; ctx.fill()
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1.5; ctx.stroke()
 }
 
 function redraw() {
-  drawSV()
-  drawHue()
+  if (pickerMode.value === 'wheel') drawWheel()
+  else { drawSV(); drawHue() }
 }
+
+onMounted(redraw)
+watch(() => [props.targetColor, props.userColor, pickerMode.value], redraw, { deep: true })
 
 onMounted(redraw)
 watch(() => [props.targetColor, props.userColor], redraw, { deep: true })
@@ -211,20 +241,14 @@ watch(() => [props.targetColor, props.userColor], redraw, { deep: true })
 .grade-fail     { --grade-color: #ef4444; }
 
 /* Picker comparison */
-.picker-compare { display: flex; gap: 6px; align-items: flex-start; flex-direction: column; }
+.picker-compare { display: flex; gap: 6px; align-items: flex-end; flex-wrap: wrap; }
 .sv-canvas { border-radius: 6px; display: block; }
 .hue-canvas { border-radius: 4px; display: block; }
+.wheel-canvas { border-radius: 50%; display: block; }
 .picker-legend {
-  display: flex; align-items: center; gap: 4px;
-  font-size: 11px; color: var(--c-muted);
+  width: 100%; display: flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--c-muted); margin-top: 2px;
 }
-.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid; }
-.dot-target { background: #fff; border-color: #fff; box-shadow: 0 0 0 1px #888; }
-.dot-user   { background: #f472b6; border-color: #f472b6; box-shadow: 0 0 0 1px #888; }
-
-/* Wrap sv + hue side by side */
-.picker-compare { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
-.picker-legend { width: 100%; margin-top: 2px; }
 
 /* Color values */
 .color-compare { display: flex; gap: 12px; }
